@@ -1,12 +1,7 @@
 import utils.input_gathering as input
 import utils.finance_methods as method
-global income,expenses,savings_goals,interest
-income=0
-expenses=0 
-savings_goals=["Fixed deposits","Recurring deposit","Self SIP","EPF-style Saving","Emergency Fund Target"]
-interest =0.0
-
-input.InputGathering(income,expenses,savings_goals)
-
-
-print(income,expenses)
+import globals
+globals.income,globals.expenses,globals.savings_goals_selected_option=input.InputGathering(globals.income,globals.expenses,globals.savings_goals,globals.savings_goals_selected_option)
+globals.interest=method.compute(globals.income-globals.expenses,globals.savings_goals_selected_option,globals.interest)
+print('The interest you will in an year would be ',globals.interest)
+print('Total savings at the end of an year would be ',globals.interest+(globals.income-globals.expenses)*12)
