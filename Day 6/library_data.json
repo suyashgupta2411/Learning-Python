@@ -1,0 +1,20 @@
+{
+    "books": {
+        "234": {
+            "book_id": 234,
+            "title": "Suyash Guota",
+            "author": "Suyash",
+            "is_available": false
+        }
+    },
+    "members": {
+        "12": {
+            "member_id": 12,
+            "name": "Suyash Gupta",
+            "borrowed_books": {
+                "234": "2025-09-07"
+            },
+            "fine": 0
+        }
+    }
+}
