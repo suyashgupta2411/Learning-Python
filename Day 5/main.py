@@ -1,106 +1,118 @@
-from datetime import date
-import csv
-import os
+# pip install websocket-client pyaudio
 
-categories = ['Food', 'Travel', 'Shopping', 'Bills', 'Misc']
-file_name = "expenses.csv"
+import pyaudio
+import websocket
+import json
+import threading
+import time
+from urllib.parse import urlencode
 
-def add_expense():
-    if not os.path.exists(file_name):
-        with open(file_name, 'w', newline='', encoding='utf-8') as file:
-            writer = csv.writer(file)
-            writer.writerow(["Date", "Category", "Amount", "Description"])
+# Configuration
+API_KEY = "239f4246625b46b4bb840010f2aaafeb"
+CONNECTION_PARAMS = {"sample_rate": 16000, "format_turns": True}
+API_ENDPOINT = f"wss://streaming.assemblyai.com/v3/ws?{urlencode(CONNECTION_PARAMS)}"
 
-    amount = -1
-    while amount < 0:
-        try:
-            amount = float(input('Enter the amount: '))
-            if amount < 0:
-                print('Please enter positive amount only')
-        except ValueError:
-            print("Invalid number. Please enter a valid amount.")
+# Audio settings
+FRAMES_PER_BUFFER = 800
+SAMPLE_RATE = 16000
+FORMAT = pyaudio.paInt16
 
-    for i in range(len(categories)):
-        print(f"{i+1}. {categories[i]}")
-    category_choice = 0
-    while category_choice < 1 or category_choice > len(categories):
-        try:
-            category_choice = int(input('Choose one of the categories: '))
-            if category_choice < 1 or category_choice > len(categories):
-                print('Please enter a valid serial number to choose the category')
-        except ValueError:
-            print("Invalid choice. Please enter a number.")
+# Global variables
+audio = None
+stream = None
+ws_app = None
+stop_event = threading.Event()
 
-    category = categories[category_choice - 1]
-    current_date = date.today().strftime("%Y-%m-%d")
-    description = input('Enter description (optional): ')
+# Global transcript storage
+TRANSCRIPT = {'text': ''}
+transcript_lock = threading.Lock()
 
-    with open(file_name, mode='a', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerow([current_date, category, amount, description])
+def on_open(ws):
+    def stream_audio():
+        while not stop_event.is_set():
+            try:
+                audio_data = stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
+                ws.send(audio_data, websocket.ABNF.OPCODE_BINARY)
+            except:
+                break
+    
+    threading.Thread(target=stream_audio, daemon=True).start()
 
-    print(f" Expense added: {current_date}, {category}, {amount}, {description}")
+def on_message(ws, message):
+    try:
+        data = json.loads(message)
+        if data.get('type') == "Turn" and data.get('turn_is_formatted'):
+            transcript = data.get('transcript', '').strip()
+            if transcript:
+                with transcript_lock:
+                    if TRANSCRIPT['text']:
+                        TRANSCRIPT['text'] += ' ' + transcript
+                    else:
+                        TRANSCRIPT['text'] = transcript
+    except:
+        pass
 
-def view_all_expenses():
-    if not os.path.exists(file_name):
-        print("⚠ No expenses found.")
+def on_error(ws, error):
+    stop_event.set()
+
+def on_close(ws, close_status_code, close_msg):
+    stop_event.set()
+    try:
+        if stream:
+            stream.stop_stream()
+            stream.close()
+        if audio:
+            audio.terminate()
+    except:
+        pass
+
+def run():
+    global audio, stream, ws_app
+
+    audio = pyaudio.PyAudio()
+    
+    try:
+        stream = audio.open(
+            input=True,
+            frames_per_buffer=FRAMES_PER_BUFFER,
+            channels=1,
+            format=FORMAT,
+            rate=SAMPLE_RATE,
+        )
+    except Exception as e:
+        print(f"Microphone error: {e}")
         return
 
-    choice = input("View (A)ll expenses or (F)ilter by date? ").strip().lower()
+    ws_app = websocket.WebSocketApp(
+        API_ENDPOINT,
+        header={"Authorization": API_KEY},
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close,
+    )
 
-    with open(file_name, 'r', newline='', encoding='utf-8') as csvfile:
-        read = csv.reader(csvfile)
-        data = list(read)
+    ws_thread = threading.Thread(target=ws_app.run_forever, daemon=True)
+    ws_thread.start()
 
-        if not data:
-            print("No expenses recorded.")
-            return
-
-        if choice == 'f':
-            filter_date = input("Enter date (YYYY-MM-DD): ").strip()
-            rows = [row for row in data if row[0] == filter_date or row[0] == "Date"]
-        else:
-            rows = data
-
+    try:
+        print("Recording... Press Ctrl+C to stop.")
+        while ws_thread.is_alive():
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("Stopping...")
+        stop_event.set()
         
-        col_widths = [max(len(str(item)) for item in col) for col in zip(*rows)]
-        for row in rows:
-            print(" | ".join(str(item).ljust(width) for item, width in zip(row, col_widths)))
-
-def summarise():
-    if not os.path.exists(file_name):
-        print('⚠ No file found')
-        return
-    with open(file_name, 'r', newline='', encoding='utf-8') as f:
-        read = csv.reader(f)
-        next(read, None) 
-        total = 0
-        for row in read:
-            if row and row[2].strip():
-                total += float(row[2])
-        print(f"💰 Total Expenses: {total}")
-
-def main():
-    while True:
-        print("\n--- Personal Expense Tracker ---")
-        print("1. Add Expense")
-        print("2. View Expenses")
-        print("3. Summarise Expenses")
-        print("4. Exit")
-
-        choice = input("Choose an option: ").strip()
-
-        if choice == '1':
-            add_expense()
-        elif choice == '2':
-            view_all_expenses()
-        elif choice == '3':
-            summarise()
-        elif choice == '4':
-            print("Goodbye!")
-            break
-        else:
-            print("Invalid choice. Please select a valid option.")
+        try:
+            ws_app.send(json.dumps({"type": "Terminate"}))
+            time.sleep(0.5)
+            ws_app.close()
+        except:
+            pass
+        
+        ws_thread.join(timeout=1.0)
+       # print(f"Transcript: {TRANSCRIPT['text']}")
 
 if __name__ == "__main__":
-    main()
+    run()
+
